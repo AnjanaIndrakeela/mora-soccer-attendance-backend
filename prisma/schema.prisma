@@ -1,0 +1,168 @@
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "esm"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// All instants are stored as timestamptz (UTC); display in the team's local timezone.
+
+enum Role {
+  ADMIN
+  PLAYER
+}
+
+enum SessionType {
+  PRACTICE
+  FITNESS
+  MATCH_PREP
+  OTHER
+}
+
+enum SessionStatus {
+  SCHEDULED
+  ACTIVE
+  ENDED
+  FINALIZED
+}
+
+enum AttendanceStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  ABSENT
+}
+
+enum MatchResult {
+  WIN
+  DRAW
+  LOSS
+}
+
+/// Login account. Linked to a roster entry (Player) once the player claims it.
+model User {
+  id                String    @id @default(cuid())
+  email             String    @unique
+  passwordHash      String
+  role              Role      @default(PLAYER)
+  playerId          String?   @unique
+  player            Player?   @relation(fields: [playerId], references: [id], onDelete: SetNull)
+  /// Set when an admin confirms the user's claim on their roster entry; required to scan QR codes.
+  playerConfirmedAt DateTime? @db.Timestamptz(3)
+  createdAt         DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime  @updatedAt @db.Timestamptz(3)
+
+  passwordResetTokens PasswordResetToken[]
+  sessionsCreated     Session[]            @relation("SessionCreatedBy")
+  attendanceReviewed  AttendanceRecord[]   @relation("AttendanceReviewedBy")
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime  @db.Timestamptz(3)
+  usedAt    DateTime? @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@index([userId])
+}
+
+/// Roster entry created by an admin. Soft-deleted via isActive.
+model Player {
+  id            String    @id @default(cuid())
+  name          String
+  indexNo       String    @unique
+  jerseyNumber  Int?
+  position      String?
+  birthday      DateTime? @db.Date
+  batch         String?
+  department    String?
+  faculty       String?
+  contactNo     String?
+  profilePicUrl String?
+  isActive      Boolean   @default(true)
+  joinedAt      DateTime  @default(now()) @db.Timestamptz(3)
+  createdAt     DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime  @updatedAt @db.Timestamptz(3)
+
+  user              User?
+  attendanceRecords AttendanceRecord[]
+
+  @@index([isActive])
+}
+
+model Session {
+  id          String        @id @default(cuid())
+  date        DateTime      @db.Date
+  startTime   DateTime      @db.Timestamptz(3)
+  endTime     DateTime      @db.Timestamptz(3)
+  type        SessionType
+  status      SessionStatus @default(SCHEDULED)
+  qrToken     String?       @unique
+  createdById String?
+  createdBy   User?         @relation("SessionCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime      @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime      @updatedAt @db.Timestamptz(3)
+
+  attendanceRecords AttendanceRecord[]
+
+  @@index([date])
+  @@index([status])
+}
+
+model AttendanceRecord {
+  id           String           @id @default(cuid())
+  sessionId    String
+  session      Session          @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  playerId     String
+  player       Player           @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  status       AttendanceStatus @default(PENDING)
+  scannedAt    DateTime?        @db.Timestamptz(3)
+  reviewedAt   DateTime?        @db.Timestamptz(3)
+  reviewedById String?
+  reviewedBy   User?            @relation("AttendanceReviewedBy", fields: [reviewedById], references: [id], onDelete: SetNull)
+  createdAt    DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime         @updatedAt @db.Timestamptz(3)
+
+  // The unique index also serves lookups by sessionId.
+  @@unique([sessionId, playerId])
+  @@index([sessionId, status])
+  @@index([playerId])
+}
+
+model Tournament {
+  id          String    @id @default(cuid())
+  name        String
+  venue       String?
+  startDate   DateTime  @db.Timestamptz(3)
+  endDate     DateTime? @db.Timestamptz(3)
+  description String?
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime  @updatedAt @db.Timestamptz(3)
+
+  matches Match[]
+
+  @@index([startDate])
+}
+
+/// A played or scheduled match. tournamentId is null for friendlies.
+model Match {
+  id           String       @id @default(cuid())
+  tournamentId String?
+  tournament   Tournament?  @relation(fields: [tournamentId], references: [id], onDelete: SetNull)
+  opponent     String
+  date         DateTime     @db.Timestamptz(3)
+  result       MatchResult?
+  scoreFor     Int?
+  scoreAgainst Int?
+  createdAt    DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime     @updatedAt @db.Timestamptz(3)
+
+  @@index([tournamentId])
+  @@index([date])
+}
