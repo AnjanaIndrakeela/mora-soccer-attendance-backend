@@ -1,7 +1,7 @@
 import QRCode from "qrcode";
 import { env } from "../config/env.js";
 import type { AttendanceStatus, Session, SessionStatus, SessionType } from "../generated/prisma/client.js";
-import { badRequest, conflict, notFound } from "../lib/http-error.js";
+import { badRequest, conflict, HttpError, notFound } from "../lib/http-error.js";
 import { prisma } from "../lib/prisma.js";
 import { isPastScanWindow, isWithinScanWindow, signQrToken, verifyQrToken } from "../lib/qr-token.js";
 
@@ -197,39 +197,62 @@ export async function finalizeSession(id: string) {
   return getSession(id);
 }
 
-/** Player check-in from a scanned QR code. */
-export async function attend(
-  user: { playerId: string | null; playerConfirmedAt: Date | null },
-  sessionId: string,
-  token: string,
-) {
+type CheckInUser = { playerId: string | null; playerConfirmedAt: Date | null };
+
+/**
+ * Validates a scanned QR token and works out whether this user can check in.
+ * An invalid token throws; every other problem is returned as `blocked` so the scan page can still show the session.
+ */
+async function checkInState(user: CheckInUser, sessionId: string, token: string) {
   const session = await prisma.session.findUnique({ where: { id: sessionId } });
   if (!session || !session.qrToken || token !== session.qrToken || !verifyQrToken(token, sessionId)) {
     throw badRequest("This QR code is invalid or has expired");
   }
 
+  const player = user.playerId
+    ? await prisma.player.findUnique({ where: { id: user.playerId }, select: { id: true, isActive: true, name: true } })
+    : null;
+  const record = player
+    ? await prisma.attendanceRecord.findUnique({
+        where: { sessionId_playerId: { sessionId, playerId: player.id } },
+        select: { id: true, status: true, scannedAt: true },
+      })
+    : null;
+
   const status = effectiveStatus(session);
-  if (status === "ENDED" || status === "FINALIZED") throw conflict("This session has ended");
-  if (status !== "ACTIVE") throw conflict("Check-in for this session hasn't opened yet");
+  let blocked: { status: 400 | 409; message: string } | null = null;
+  if (record) blocked = { status: 409, message: "You have already checked in to this session" };
+  else if (status === "ENDED" || status === "FINALIZED") blocked = { status: 409, message: "This session has ended" };
+  else if (status !== "ACTIVE") blocked = { status: 409, message: "Check-in for this session hasn't opened yet" };
+  else if (!player) blocked = { status: 400, message: "Your account is not linked to a player" };
+  else if (!user.playerConfirmedAt) blocked = { status: 400, message: "Your account is waiting for admin confirmation" };
+  else if (!player.isActive) blocked = { status: 400, message: "Your player profile is inactive" };
 
-  if (!user.playerId) throw badRequest("Your account is not linked to a player");
-  if (!user.playerConfirmedAt) throw badRequest("Your account is waiting for admin confirmation");
+  return {
+    session: { id: session.id, type: session.type, status, startTime: session.startTime, endTime: session.endTime },
+    player: player ? { name: player.name } : null,
+    record,
+    blocked,
+  };
+}
 
-  const player = await prisma.player.findUnique({ where: { id: user.playerId }, select: { id: true, isActive: true, name: true } });
-  if (!player?.isActive) throw badRequest("Your player profile is inactive");
+/** What the scan page shows before the player confirms. */
+export async function getCheckInPreview(user: CheckInUser, sessionId: string, token: string) {
+  const { session, player, record, blocked } = await checkInState(user, sessionId, token);
+  return { session, player, record, canCheckIn: !blocked, reason: blocked?.message ?? null };
+}
 
-  const existing = await prisma.attendanceRecord.findUnique({
-    where: { sessionId_playerId: { sessionId, playerId: player.id } },
-    select: { id: true },
-  });
-  if (existing) throw conflict("You have already checked in to this session");
+/** Player confirms participation after scanning the QR code. The record waits for admin approval. */
+export async function attend(user: CheckInUser, sessionId: string, token: string) {
+  const { session, player, blocked } = await checkInState(user, sessionId, token);
+  if (blocked) throw new HttpError(blocked.status, blocked.message);
 
   const [record] = await prisma.$transaction([
     prisma.attendanceRecord.create({
-      data: { sessionId, playerId: player.id, status: "PENDING", scannedAt: new Date() },
+      data: { sessionId, playerId: user.playerId!, status: "PENDING", scannedAt: new Date() },
       select: { id: true, status: true, scannedAt: true },
     }),
     prisma.session.updateMany({ where: { id: sessionId, status: "SCHEDULED" }, data: { status: "ACTIVE" } }),
   ]);
-  return { record, session: { id: session.id, type: session.type, startTime: session.startTime, endTime: session.endTime }, player: { name: player.name } };
+  return { record, session, player: { name: player!.name } };
 }

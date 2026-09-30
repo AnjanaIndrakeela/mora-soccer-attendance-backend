@@ -4,9 +4,10 @@ import { requireAdmin, requireAuth } from "../middleware/auth.middleware.js";
 import { validateBody } from "../middleware/validate.middleware.js";
 import { attendSchema, reviewSchema } from "../schemas/index.js";
 
-/** Mounted at the root: POST /attend and PATCH /attendance/:id. */
+/** Mounted at the root: GET /attend/:sessionId, POST /attend and PATCH /attendance/:id. */
 const router = Router();
 
+router.get("/attend/:sessionId", requireAuth, sessions.attendPreview);
 router.post("/attend", requireAuth, validateBody(attendSchema), sessions.attend);
 router.patch("/attendance/:id", requireAuth, requireAdmin, validateBody(reviewSchema), sessions.review);
 

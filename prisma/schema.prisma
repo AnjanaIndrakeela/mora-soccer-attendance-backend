@@ -92,6 +92,8 @@ model Player {
 
   user              User?
   attendanceRecords AttendanceRecord[]
+  matchAppearances  MatchAppearance[]
+  manOfTheMatch     Match[]            @relation("ManOfTheMatch")
 
   @@index([isActive])
 }
@@ -152,17 +154,37 @@ model Tournament {
 
 /// A played or scheduled match. tournamentId is null for friendlies.
 model Match {
-  id           String       @id @default(cuid())
-  tournamentId String?
-  tournament   Tournament?  @relation(fields: [tournamentId], references: [id], onDelete: SetNull)
-  opponent     String
-  date         DateTime     @db.Timestamptz(3)
-  result       MatchResult?
-  scoreFor     Int?
-  scoreAgainst Int?
-  createdAt    DateTime     @default(now()) @db.Timestamptz(3)
-  updatedAt    DateTime     @updatedAt @db.Timestamptz(3)
+  id              String       @id @default(cuid())
+  tournamentId    String?
+  tournament      Tournament?  @relation(fields: [tournamentId], references: [id], onDelete: SetNull)
+  opponent        String
+  date            DateTime     @db.Timestamptz(3)
+  result          MatchResult?
+  scoreFor        Int?
+  scoreAgainst    Int?
+  manOfTheMatchId String?
+  manOfTheMatch   Player?      @relation("ManOfTheMatch", fields: [manOfTheMatchId], references: [id], onDelete: SetNull)
+  createdAt       DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime     @updatedAt @db.Timestamptz(3)
+
+  appearances MatchAppearance[]
 
   @@index([tournamentId])
   @@index([date])
+  @@index([manOfTheMatchId])
+}
+
+/// A player who played in a match, with the cards they received. Drives the points table.
+model MatchAppearance {
+  id          String   @id @default(cuid())
+  matchId     String
+  match       Match    @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  playerId    String
+  player      Player   @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  yellowCards Int      @default(0)
+  redCards    Int      @default(0)
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+
+  @@unique([matchId, playerId])
+  @@index([playerId])
 }

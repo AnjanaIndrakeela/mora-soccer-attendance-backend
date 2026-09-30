@@ -15,5 +15,7 @@ export default defineConfig({
     globalSetup: ["tests/global-setup.ts"],
     // Tests share one database, so run files one at a time.
     fileParallelism: false,
+    // Each user created or logged in costs a bcrypt hash (cost 12, deliberately slow).
+    testTimeout: 20_000,
   },
 });

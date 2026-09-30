@@ -9,7 +9,7 @@ const PASSWORD = "password123";
 
 export async function resetDatabase() {
   await prisma.$executeRawUnsafe(
-    `TRUNCATE "AttendanceRecord", "Session", "PasswordResetToken", "User", "Player", "Match", "Tournament" CASCADE`,
+    `TRUNCATE "AttendanceRecord", "Session", "PasswordResetToken", "User", "MatchAppearance", "Player", "Match", "Tournament" CASCADE`,
   );
 }
 

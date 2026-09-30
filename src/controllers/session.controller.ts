@@ -1,6 +1,6 @@
 import type { Request, Response } from "express";
 import { currentUser } from "../middleware/auth.middleware.js";
-import { sessionListQuery } from "../schemas/index.js";
+import { attendPreviewQuery, sessionListQuery } from "../schemas/index.js";
 import * as sessionService from "../services/session.service.js";
 
 type IdParams = Request<{ id: string }>;
@@ -53,6 +53,11 @@ export async function finalize(req: IdParams, res: Response) {
 
 export async function review(req: IdParams, res: Response) {
   res.json(await sessionService.reviewAttendance(req.params.id, req.body.status, currentUser(req).id));
+}
+
+export async function attendPreview(req: Request<{ sessionId: string }>, res: Response) {
+  const { t } = attendPreviewQuery.parse(req.query);
+  res.json(await sessionService.getCheckInPreview(currentUser(req), req.params.sessionId, t));
 }
 
 export async function attend(req: Request, res: Response) {

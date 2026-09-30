@@ -185,6 +185,18 @@ async function main() {
       { opponent: "NSBM Green University", date: colombo(-12, 16), scoreFor: 2, scoreAgainst: 2, result: "DRAW" },
     ],
   });
+
+  // Match reports: a 14-player squad per match, a few cards, and a man of the match (drives the points table).
+  for (const match of await prisma.match.findMany({ orderBy: { date: "asc" } })) {
+    const squad = players.filter((p) => p.joinedAt <= match.date).sort(() => random() - 0.5).slice(0, 14);
+    await prisma.matchAppearance.createMany({
+      data: squad.map((p) => {
+        const roll = random();
+        return { matchId: match.id, playerId: p.id, yellowCards: roll < 0.15 ? 1 : 0, redCards: roll > 0.97 ? 1 : 0 };
+      }),
+    });
+    await prisma.match.update({ where: { id: match.id }, data: { manOfTheMatchId: pick(squad).id } });
+  }
   await prisma.tournament.createMany({
     data: [
       {

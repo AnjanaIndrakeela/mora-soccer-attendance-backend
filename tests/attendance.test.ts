@@ -101,6 +101,42 @@ describe("POST /attend", () => {
   });
 });
 
+describe("GET /attend/:sessionId (scan preview)", () => {
+  it("shows the session without checking in, then reflects the confirmed check-in", async () => {
+    const { agent, player } = await createPlayerUser();
+    const session = await createSession(-10);
+    const preview = () => agent.get(`/attend/${session.id}`).query({ t: session.qrToken! });
+
+    const before = await preview().expect(200);
+    expect(before.body).toMatchObject({ canCheckIn: true, reason: null, record: null, player: { name: player.name } });
+    expect(before.body.session.status).toBe("ACTIVE");
+    expect(await prisma.attendanceRecord.count()).toBe(0);
+
+    await scan(agent, session.id, session.qrToken!).expect(201);
+
+    const after = await preview().expect(200);
+    expect(after.body.canCheckIn).toBe(false);
+    expect(after.body.record.status).toBe("PENDING");
+  });
+
+  it("explains why check-in isn't possible", async () => {
+    const { agent } = await createPlayerUser({ confirmed: false });
+    const session = await createSession(-10);
+
+    const { body } = await agent.get(`/attend/${session.id}`).query({ t: session.qrToken! }).expect(200);
+
+    expect(body.canCheckIn).toBe(false);
+    expect(body.reason).toMatch(/confirmation/);
+  });
+
+  it("rejects an invalid token", async () => {
+    const { agent } = await createPlayerUser();
+    const session = await createSession(-10);
+
+    await agent.get(`/attend/${session.id}`).query({ t: "garbage" }).expect(400);
+  });
+});
+
 describe("review and finalize", () => {
   it("blocks finalizing while records are pending, then marks everyone else ABSENT", async () => {
     const admin = await createAdmin();
@@ -164,5 +200,100 @@ describe("access control", () => {
     const { body } = await agent.get(`/players/${other.id}`).expect(200);
     expect(body).not.toHaveProperty("contactNo");
     expect(body).not.toHaveProperty("birthday");
+  });
+});
+
+describe("match reports and points", () => {
+  it("scores +3 per match, +7 per man of the match, -1 per yellow and -2 per red", async () => {
+    const admin = await createAdmin();
+    const [a, b, c] = [await createPlayer({ name: "A" }), await createPlayer({ name: "B" }), await createPlayer({ name: "C" })];
+    const match1 = await prisma.match.create({ data: { opponent: "X", date: new Date() } });
+    const match2 = await prisma.match.create({ data: { opponent: "Y", date: new Date() } });
+
+    await admin
+      .put(`/matches/${match1.id}/report`)
+      .send({
+        manOfTheMatchId: a.id,
+        appearances: [
+          { playerId: a.id, yellowCards: 0, redCards: 0 },
+          { playerId: b.id, yellowCards: 1, redCards: 0 },
+          { playerId: c.id, yellowCards: 2, redCards: 1 },
+        ],
+      })
+      .expect(200);
+    await admin
+      .put(`/matches/${match2.id}/report`)
+      .send({ manOfTheMatchId: b.id, appearances: [{ playerId: a.id, yellowCards: 1, redCards: 0 }, { playerId: b.id, yellowCards: 0, redCards: 0 }] })
+      .expect(200);
+
+    const { body } = await admin.get("/stats/points").expect(200);
+    const points = Object.fromEntries(body.players.map((p: { name: string; points: number }) => [p.name, p.points]));
+    // A: 2 apps (6) + 1 MOTM (7) + 1 yellow (-1) = 12. B: 2 apps (6) + MOTM (7) + 1 yellow (-1) = 12. C: 3 - 2 - 2 = -1.
+    expect(points).toEqual({ A: 12, B: 12, C: -1 });
+    expect(body.rules).toEqual({ appearance: 3, manOfTheMatch: 7, yellowCard: -1, redCard: -2 });
+
+    const player = await admin.get(`/players/${a.id}`).expect(200);
+    expect(player.body.points).toMatchObject({ appearances: 2, manOfTheMatch: 1, yellowCards: 1, redCards: 0, points: 12 });
+    expect(player.body.matchHistory).toHaveLength(2);
+  });
+
+  it("replaces the report on save, so corrections update the points", async () => {
+    const admin = await createAdmin();
+    const a = await createPlayer({ name: "A" });
+    const match = await prisma.match.create({ data: { opponent: "X", date: new Date() } });
+
+    await admin.put(`/matches/${match.id}/report`).send({ manOfTheMatchId: a.id, appearances: [{ playerId: a.id, yellowCards: 0, redCards: 0 }] }).expect(200);
+    await admin.put(`/matches/${match.id}/report`).send({ manOfTheMatchId: null, appearances: [] }).expect(200);
+
+    const { body } = await admin.get(`/players/${a.id}`).expect(200);
+    expect(body.points.points).toBe(0);
+  });
+
+  it("rejects a man of the match who didn't play, and invalid card counts", async () => {
+    const admin = await createAdmin();
+    const [a, b] = [await createPlayer(), await createPlayer()];
+    const match = await prisma.match.create({ data: { opponent: "X", date: new Date() } });
+
+    await admin.put(`/matches/${match.id}/report`).send({ manOfTheMatchId: b.id, appearances: [{ playerId: a.id, yellowCards: 0, redCards: 0 }] }).expect(400);
+    await admin.put(`/matches/${match.id}/report`).send({ manOfTheMatchId: null, appearances: [{ playerId: a.id, yellowCards: 3, redCards: 0 }] }).expect(400);
+  });
+
+  it("only lets admins record reports", async () => {
+    const { agent } = await createPlayerUser();
+    const match = await prisma.match.create({ data: { opponent: "X", date: new Date() } });
+
+    await agent.put(`/matches/${match.id}/report`).send({ manOfTheMatchId: null, appearances: [] }).expect(403);
+  });
+});
+
+describe("ordering by points, then attendance", () => {
+  it("breaks ties on points with attendance % on the team list and the leaderboard", async () => {
+    const admin = await createAdmin();
+    const top = await createPlayer({ name: "Top scorer" });
+    const regular = await createPlayer({ name: "Regular" }); // same points as `rare`, better attendance
+    const rare = await createPlayer({ name: "Rare" });
+
+    // Points: top 13 (played + MOTM), regular 3, rare 3.
+    const match = await prisma.match.create({ data: { opponent: "X", date: new Date() } });
+    await admin
+      .put(`/matches/${match.id}/report`)
+      .send({
+        manOfTheMatchId: top.id,
+        appearances: [top, regular, rare].map((p) => ({ playerId: p.id, yellowCards: 0, redCards: 0 })),
+      })
+      .expect(200);
+
+    // Attendance: one finalized session that only `regular` attended.
+    const session = await createSession(-10);
+    await admin.post(`/sessions/${session.id}/attendance`).send({ playerId: regular.id, status: "APPROVED" }).expect(200);
+    await admin.post(`/sessions/${session.id}/end`).expect(200);
+    await admin.post(`/sessions/${session.id}/finalize`).expect(200);
+
+    const list = await admin.get("/players").query({ sort: "points" }).expect(200);
+    expect(list.body.items.map((p: { name: string }) => p.name)).toEqual(["Top scorer", "Regular", "Rare"]);
+
+    const board = await admin.get("/stats/points").expect(200);
+    expect(board.body.players.map((p: { name: string }) => p.name)).toEqual(["Top scorer", "Regular", "Rare"]);
+    expect(board.body.players[1].attendance).toEqual({ approved: 1, total: 1, percent: 100 });
   });
 });

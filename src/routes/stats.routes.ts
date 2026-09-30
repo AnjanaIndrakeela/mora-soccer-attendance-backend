@@ -9,5 +9,6 @@ router.use(requireAuth);
 router.get("/dashboard", stats.dashboard);
 router.get("/attendance-trend", stats.attendanceTrend);
 router.get("/progress", stats.progress);
+router.get("/points", stats.points);
 
 export default router;

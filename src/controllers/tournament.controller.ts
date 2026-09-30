@@ -46,3 +46,11 @@ export async function removeMatch(req: IdParams, res: Response) {
   await tournamentService.deleteMatch(req.params.id);
   res.status(204).end();
 }
+
+export async function getMatch(req: IdParams, res: Response) {
+  res.json(await tournamentService.getMatch(req.params.id));
+}
+
+export async function setMatchReport(req: IdParams, res: Response) {
+  res.json(await tournamentService.setMatchReport(req.params.id, req.body));
+}
