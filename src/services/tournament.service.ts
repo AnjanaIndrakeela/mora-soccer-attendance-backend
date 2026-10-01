@@ -50,8 +50,17 @@ export async function getTournament(id: string) {
 
 export const createTournament = (input: TournamentInput) => prisma.tournament.create({ data: input });
 
-export const updateTournament = (id: string, input: Partial<TournamentInput>) =>
-  prisma.tournament.update({ where: { id }, data: input });
+export async function updateTournament(id: string, input: Partial<TournamentInput>) {
+  const current = await prisma.tournament.findUnique({ where: { id } });
+  if (!current) throw notFound("Tournament");
+
+  // A partial update can move either end, so check the dates the tournament will end up with.
+  const startDate = input.startDate ?? current.startDate;
+  const endDate = input.endDate === undefined ? current.endDate : input.endDate;
+  if (endDate && endDate < startDate) throw badRequest("End date can't be before the start date");
+
+  return prisma.tournament.update({ where: { id }, data: input });
+}
 
 export async function deleteTournament(id: string) {
   // Matches are kept as friendlies (tournamentId is set to null).
